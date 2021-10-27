@@ -1,4 +1,4 @@
-module github.com/seqsense/s3sync
+module github.com/noice-com/s3sync
 
 go 1.15
 
