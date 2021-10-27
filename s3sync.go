@@ -31,15 +31,16 @@ import (
 
 // Manager manages the sync operation.
 type Manager struct {
-	s3             s3iface.S3API
-	nJobs          int
-	del            bool
-	dryrun         bool
-	acl            *string
-	guessMime      bool
-	contentType    *string
-	downloaderOpts []func(*s3manager.Downloader)
-	uploaderOpts   []func(*s3manager.Uploader)
+	s3                  s3iface.S3API
+	nJobs               int
+	del                 bool
+	dryrun              bool
+	acl                 *string
+	guessMime           bool
+	contentType         *string
+	contentTypeSelector func(string) (string, error)
+	downloaderOpts      []func(*s3manager.Downloader)
+	uploaderOpts        []func(*s3manager.Uploader)
 }
 
 type operation int
@@ -292,6 +293,12 @@ func (m *Manager) upload(file *fileInfo, sourcePath string, destPath *s3Path) er
 
 	var contentType *string
 	switch {
+	case m.contentTypeSelector != nil:
+		ct, err := m.contentTypeSelector(sourceFilename)
+		if err != nil {
+			return err
+		}
+		contentType = &ct
 	case m.contentType != nil:
 		contentType = m.contentType
 	case m.guessMime:

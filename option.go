@@ -79,3 +79,10 @@ func WithUploaderOptions(opts ...func(*s3manager.Uploader)) Option {
 		m.uploaderOpts = opts
 	}
 }
+
+// WithContentTypeSelectorOption sets a MIME type selector into the Manager.
+func WithContentTypeSelectorOption(contentTypeSelector func(string) (string, error)) Option {
+	return func(m *Manager) {
+		m.contentTypeSelector = contentTypeSelector
+	}
+}
