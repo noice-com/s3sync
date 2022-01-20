@@ -14,9 +14,11 @@ package s3sync
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +36,7 @@ type Manager struct {
 	s3                  s3iface.S3API
 	nJobs               int
 	del                 bool
+	softDelete          bool
 	dryrun              bool
 	acl                 *string
 	guessMime           bool
@@ -41,6 +44,7 @@ type Manager struct {
 	contentTypeSelector func(string) (string, error)
 	downloaderOpts      []func(*s3manager.Downloader)
 	uploaderOpts        []func(*s3manager.Uploader)
+	cacheControl        *string
 }
 
 type operation int
@@ -48,6 +52,7 @@ type operation int
 const (
 	opUpdate operation = iota
 	opDelete
+	opSoftDelete
 )
 
 type fileInfo struct {
@@ -144,7 +149,7 @@ func (m *Manager) syncLocalToS3(chJob chan func(), sourcePath string, destPath *
 	wg := &sync.WaitGroup{}
 	errs := &multiErr{}
 	for source := range filterFilesForSync(
-		listLocalFiles(sourcePath), m.listS3Files(destPath), m.del,
+		listLocalFiles(sourcePath), m.listS3Files(destPath), m.del, m.softDelete,
 	) {
 		wg.Add(1)
 		source := source
@@ -163,6 +168,10 @@ func (m *Manager) syncLocalToS3(chJob chan func(), sourcePath string, destPath *
 				if err := m.deleteRemote(source.fileInfo, destPath); err != nil {
 					errs.Append(err)
 				}
+			case opSoftDelete:
+				if err := m.softDeleteRemote(source.fileInfo, destPath); err != nil {
+					errs.Append(err)
+				}
 			}
 		}
 	}
@@ -176,7 +185,7 @@ func (m *Manager) syncS3ToLocal(chJob chan func(), sourcePath *s3Path, destPath 
 	wg := &sync.WaitGroup{}
 	errs := &multiErr{}
 	for source := range filterFilesForSync(
-		m.listS3Files(sourcePath), listLocalFiles(destPath), m.del,
+		m.listS3Files(sourcePath), listLocalFiles(destPath), m.del, m.softDelete,
 	) {
 		wg.Add(1)
 		source := source
@@ -321,11 +330,12 @@ func (m *Manager) upload(file *fileInfo, sourcePath string, destPath *s3Path) er
 		m.s3,
 		m.uploaderOpts...,
 	).Upload(&s3manager.UploadInput{
-		Bucket:      aws.String(destFile.bucket),
-		Key:         aws.String(destFile.bucketPrefix),
-		ACL:         m.acl,
-		Body:        reader,
-		ContentType: contentType,
+		Bucket:       aws.String(destFile.bucket),
+		Key:          aws.String(destFile.bucketPrefix),
+		ACL:          m.acl,
+		Body:         reader,
+		ContentType:  contentType,
+		CacheControl: m.cacheControl,
 	})
 
 	if err != nil {
@@ -351,6 +361,74 @@ func (m *Manager) deleteRemote(file *fileInfo, destPath *s3Path) error {
 		Bucket: aws.String(destFile.bucket),
 		Key:    aws.String(destFile.bucketPrefix),
 	})
+	return err
+}
+
+func (m *Manager) softDeleteRemote(file *fileInfo, destPath *s3Path) error {
+	destFile := *destPath
+	if strings.HasSuffix(destPath.bucketPrefix, "/") || destPath.bucketPrefix == "" || !file.singleFile {
+		// If source is a single file and destination is not a directory, use destination URL as is.
+		destFile.bucketPrefix = filepath.Join(destPath.bucketPrefix, file.name)
+	}
+
+	head, err := m.s3.HeadObject(&s3.HeadObjectInput{
+		Bucket: aws.String(destFile.bucket),
+		Key:    aws.String(destFile.bucketPrefix),
+	})
+	if err != nil {
+		return err
+	}
+
+	if m.dryrun {
+		return nil
+	}
+
+	if head.Expires != nil {
+		expires, err := time.Parse(time.RFC1123, *head.Expires)
+		if err != nil {
+			return err
+		}
+		if expires.Before(time.Now()) {
+			println("Deleting", destFile.String())
+			_, err := m.s3.DeleteObject(&s3.DeleteObjectInput{
+				Bucket: aws.String(destFile.bucket),
+				Key:    aws.String(destFile.bucketPrefix),
+			})
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		println("Soft deleting", destFile.String())
+		expiryPeriod := time.Hour * 6
+		if head.CacheControl != nil {
+			for _, d := range strings.Split(*head.CacheControl, ",") {
+				directive := strings.TrimLeft(d, " ")
+				if strings.HasPrefix(directive, "max-age=") {
+					i, err := strconv.Atoi(strings.TrimPrefix(directive, "max-age="))
+					// If there's an error in parsing the int we'll just ignore it and use the default
+					if err == nil {
+						expiryPeriod = time.Duration(i) * time.Second
+					}
+				}
+			}
+
+		}
+		expiresAt := time.Now().UTC().Add(expiryPeriod)
+
+		_, err := m.s3.CopyObject(&s3.CopyObjectInput{
+			Bucket:            aws.String(destFile.bucket),
+			CopySource:        aws.String(fmt.Sprintf("%s/%s", destFile.bucket, destFile.bucketPrefix)),
+			Key:               aws.String(destFile.bucketPrefix),
+			MetadataDirective: aws.String("REPLACE"),
+			Expires:           &expiresAt,
+			Metadata:          head.Metadata,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	return err
 }
 
@@ -393,6 +471,7 @@ func (m *Manager) listS3FileWithToken(c chan *fileInfo, path *s3Path, token *str
 			sendErrorInfoToChannel(c, err)
 			continue
 		}
+
 		if name == "." {
 			// Single file was specified
 			c <- &fileInfo{
@@ -480,7 +559,7 @@ func sendErrorInfoToChannel(c chan *fileInfo, err error) {
 
 // filterFilesForSync filters the source files from the given destination files, and returns
 // another channel which includes the files necessary to be synced.
-func filterFilesForSync(sourceFileChan, destFileChan chan *fileInfo, del bool) chan *fileOp {
+func filterFilesForSync(sourceFileChan, destFileChan chan *fileInfo, del bool, softDelete bool) chan *fileOp {
 	c := make(chan *fileOp)
 
 	destFiles, err := fileInfoChanToMap(destFileChan)
@@ -509,6 +588,14 @@ func filterFilesForSync(sourceFileChan, destFileChan chan *fileInfo, del bool) c
 				if !destInfo.existsInSource {
 					// The source doesn't exist
 					c <- &fileOp{fileInfo: destInfo, op: opDelete}
+				}
+			}
+		}
+		if softDelete {
+			for _, destInfo := range destFiles {
+				if !destInfo.existsInSource {
+					// The source doesn't exist
+					c <- &fileOp{fileInfo: destInfo, op: opSoftDelete}
 				}
 			}
 		}
