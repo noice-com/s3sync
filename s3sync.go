@@ -596,8 +596,7 @@ func filterFilesForSync(sourceFileChan, destFileChan chan *fileInfo, del bool, s
 					c <- &fileOp{fileInfo: destInfo, op: opDelete}
 				}
 			}
-		}
-		if softDelete {
+		} else if softDelete {
 			for _, destInfo := range destFiles {
 				if !destInfo.existsInSource {
 					// The source doesn't exist
