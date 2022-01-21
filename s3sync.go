@@ -80,6 +80,12 @@ func New(sess *session.Session, options ...Option) *Manager {
 	for _, o := range options {
 		o(m)
 	}
+
+	if m.del && m.softDelete {
+		println("Both del and softDelete are enabled, preferring softDelete and disabling del")
+		m.del = false
+	}
+
 	return m
 }
 
