@@ -96,7 +96,7 @@ func WithSoftDelete() Option {
 
 // WithCacheControl sets the Cache-Control header for uploaded files as described in https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control
 func WithCacheControl(value string) Option {
-    return func(m *Manager) {
-        m.cacheControl = &value
-    }
+	return func(m *Manager) {
+		m.cacheControl = &value
+	}
 }
