@@ -15,6 +15,7 @@ package s3sync
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -368,6 +369,149 @@ func TestDelete(t *testing.T) {
 		}
 		if objs[0].path != "README.md" {
 			t.Error("Unexpected keys", objs)
+		}
+	})
+}
+
+func TestSoftDelete(t *testing.T) {
+	data, err := ioutil.ReadFile(dummyFilename)
+	if err != nil {
+		t.Fatal("Failed to read", dummyFilename)
+	}
+
+	dummyFileSize := len(data)
+
+	t.Run("SoftDeleteRemote", func(t *testing.T) {
+		temp, err := ioutil.TempDir("", "s3synctest")
+		defer os.RemoveAll(temp)
+
+		if err != nil {
+			t.Fatal("Failed to create temp dir")
+		}
+
+		for _, dir := range []string{
+			filepath.Join(temp, "foo"), filepath.Join(temp, "bar", "baz"),
+		} {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal("Failed to mkdir", err)
+			}
+		}
+
+		for _, file := range []string{
+			filepath.Join(temp, dummyFilename),
+			filepath.Join(temp, "foo", dummyFilename),
+			filepath.Join(temp, "bar", "baz", dummyFilename),
+		} {
+			if err := ioutil.WriteFile(file, make([]byte, dummyFileSize), 0644); err != nil {
+				t.Fatal("Failed to write", err)
+			}
+		}
+
+		if err := New(
+			getSession(), WithSoftDelete(),
+		).Sync(temp, "s3://example-bucket-delete"); err != nil {
+			t.Fatal("Sync should be successful", err)
+		}
+
+		objs := listObjectsSorted(t, "example-bucket-delete")
+		if n := len(objs); n != 3 {
+			t.Fatalf("Number of the files should be 3 (result: %v)", objs)
+		}
+		for _, obj := range objs {
+			if obj.size != dummyFileSize {
+				t.Errorf("Object size should be %d, actual %d", dummyFileSize, obj.size)
+			}
+		}
+		if objs[0].path != "README.md" ||
+			objs[1].path != "bar/baz/README.md" ||
+			objs[2].path != "foo/README.md" {
+			t.Error("Unexpected keys", objs)
+		}
+
+		// Remove all local files and sync again to soft-delete all files
+		os.RemoveAll(temp)
+		if err := New(
+			getSession(), WithSoftDelete(),
+		).Sync(temp, "s3://example-bucket-delete"); err != nil {
+			t.Fatal("Sync should be successful", err)
+		}
+
+		// All files should still exist after the soft-deletion
+		objs = listObjectsSorted(t, "example-bucket-delete")
+		if n := len(objs); n != 3 {
+			t.Fatalf("Number of the files should be 3 (result: %v)", objs)
+		}
+
+		for _, o := range objs {
+			if o.expires == "" {
+				t.Fatalf("Soft deleted objects should have expiration flag set (result: %v)", o)
+			}
+		}
+	})
+
+	t.Run("SoftDeleteRemoteSingleFile", func(t *testing.T) {
+		temp, err := ioutil.TempDir("", "s3synctest")
+		defer os.RemoveAll(temp)
+
+		if err != nil {
+			t.Fatal("Failed to create temp dir")
+		}
+		maxAgeSeconds := 2
+		maxAge := fmt.Sprintf("max-age=%d", maxAgeSeconds)
+
+		// Make sure we're starting with an empty bucket
+		c := New(getSession(), WithDelete())
+		if err := c.Sync(temp, "s3://example-bucket-delete-file/"); err != nil {
+			t.Fatal("Sync should be successful", err)
+		}
+
+		dummyFile := filepath.Join(temp, dummyFilename)
+		if err := ioutil.WriteFile(dummyFile, make([]byte, dummyFileSize), 0644); err != nil {
+			t.Fatal("Failed to write", err)
+		}
+
+		// Sync the file to the s3 bucket
+		c = New(getSession(), WithSoftDelete(), WithCacheControl(maxAge))
+		if err := c.Sync(temp, "s3://example-bucket-delete-file"); err != nil {
+			t.Fatal("Sync should be successful", err)
+		}
+
+		objs := listObjectsSorted(t, "example-bucket-delete-file")
+		if n := len(objs); n != 1 {
+			t.Fatalf("Number of the files should be 1 (result: %v)", objs)
+		}
+		if objs[0].size != dummyFileSize {
+			t.Errorf("Object size should be %d, actual %d", dummyFileSize, objs[0].size)
+		}
+		if objs[0].path != "README.md" {
+			t.Error("Unexpected keys", objs)
+		}
+		if objs[0].cacheControl != maxAge {
+			t.Errorf("Cache-control should be %s, actual \"%s\"", maxAge, objs[0].cacheControl)
+		}
+
+		// Remove the file from local and check that expires parameter gets set
+		os.Remove(dummyFile)
+		if err := c.Sync(temp, "s3://example-bucket-delete-file"); err != nil {
+			t.Fatal("Sync should be successful", err)
+		}
+		objs = listObjectsSorted(t, "example-bucket-delete-file")
+		if len(objs) == 0 {
+			t.Errorf("Should still have one object")
+		}
+		if objs[0].expires == "" {
+			t.Errorf("Expires should not be empty, actual \"%s\"", objs[0].expires)
+		}
+
+		// Check that locally deleted files that have been expired on remote
+		// get deleted
+		time.Sleep(time.Duration(maxAgeSeconds) * time.Second)
+		if err := c.Sync(temp, "s3://example-bucket-delete-file"); err != nil {
+			t.Fatal("Sync should be successful", err)
+		}
+		objs = listObjectsSorted(t, "example-bucket-delete-file")
+		if len(objs) != 0 {
+			t.Errorf("Now expired objects should have been deleted already")
 		}
 	})
 }

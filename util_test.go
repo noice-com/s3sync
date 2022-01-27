@@ -34,9 +34,11 @@ func getSession() *session.Session {
 }
 
 type s3Object struct {
-	path        string
-	size        int
-	contentType string
+	path         string
+	size         int
+	contentType  string
+	cacheControl string
+	expires      string
 }
 
 type s3ObjectList []s3Object
@@ -90,10 +92,22 @@ func listObjectsSorted(t *testing.T, bucket string) []s3Object {
 		if err != nil {
 			t.Fatal("GetObject failed", err)
 		}
+
+		cacheControl := ""
+		if o.CacheControl != nil {
+			cacheControl = *o.CacheControl
+		}
+		expires := ""
+		if o.Expires != nil {
+			expires = *o.Expires
+		}
+
 		objs = append(objs, s3Object{
-			path:        *obj.Key,
-			size:        int(*obj.Size),
-			contentType: *o.ContentType,
+			path:         *obj.Key,
+			size:         int(*obj.Size),
+			contentType:  *o.ContentType,
+			cacheControl: cacheControl,
+			expires:      expires,
 		})
 	}
 	sort.Sort(s3ObjectList(objs))
