@@ -37,7 +37,6 @@ type Manager struct {
 	nJobs               int
 	del                 bool
 	softDelete          bool
-	softDeleteHandler   func(s3api s3iface.S3API, head *s3.HeadObjectOutput, file *fileInfo, destPath *s3Path) error
 	dryrun              bool
 	acl                 *string
 	guessMime           bool
@@ -85,12 +84,6 @@ func New(sess *session.Session, options ...Option) *Manager {
 	if m.del && m.softDelete {
 		println("Both del and softDelete are enabled, preferring softDelete and disabling del")
 		m.del = false
-	}
-
-	if m.softDeleteHandler == nil {
-		m.softDeleteHandler = func(s3api s3iface.S3API, head *s3.HeadObjectOutput, file *fileInfo, destPath *s3Path) error {
-			return softDeleteHandler(s3api, head, file, destPath)
-		}
 	}
 
 	return m
@@ -396,7 +389,7 @@ func (m *Manager) softDeleteRemote(file *fileInfo, destPath *s3Path) error {
 		return nil
 	}
 
-	err = m.softDeleteHandler(m.s3, head, file, &destFile)
+	err = softDeleteHandler(m.s3, head, file, &destFile)
 
 	return err
 }

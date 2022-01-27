@@ -13,11 +13,7 @@
 
 package s3sync
 
-import (
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-)
+import "github.com/aws/aws-sdk-go/service/s3/s3manager"
 
 const (
 	// Default number of parallel file sync jobs.
@@ -95,13 +91,6 @@ func WithContentTypeSelector(contentTypeSelector func(string) (string, error)) O
 func WithSoftDelete() Option {
 	return func(m *Manager) {
 		m.softDelete = true
-	}
-}
-
-// WithSoftDeleteHandler allows the caller to modify the softDelete behaviour
-func WithSoftDeleteHandler(softDeleteHandler func(s3iface.S3API, *s3.HeadObjectOutput, *fileInfo, *s3Path) error) Option {
-	return func(m *Manager) {
-		m.softDeleteHandler = softDeleteHandler
 	}
 }
 
