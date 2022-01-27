@@ -37,6 +37,7 @@ type Manager struct {
 	nJobs               int
 	del                 bool
 	softDelete          bool
+	softDeleteHandler   func(s3api s3iface.S3API, head *s3.HeadObjectOutput, file *fileInfo, destPath *s3Path) error
 	dryrun              bool
 	acl                 *string
 	guessMime           bool
@@ -84,6 +85,12 @@ func New(sess *session.Session, options ...Option) *Manager {
 	if m.del && m.softDelete {
 		println("Both del and softDelete are enabled, preferring softDelete and disabling del")
 		m.del = false
+	}
+
+	if m.softDeleteHandler == nil {
+		m.softDeleteHandler = func(s3api s3iface.S3API, head *s3.HeadObjectOutput, file *fileInfo, destPath *s3Path) error {
+			return softDeleteHandler(s3api, head, file, destPath)
+		}
 	}
 
 	return m
@@ -389,51 +396,7 @@ func (m *Manager) softDeleteRemote(file *fileInfo, destPath *s3Path) error {
 		return nil
 	}
 
-	if head.Expires != nil {
-		expires, err := time.Parse(time.RFC1123, *head.Expires)
-		if err != nil {
-			return err
-		}
-		if expires.Before(time.Now()) {
-			println("Deleting", destFile.String())
-			_, err := m.s3.DeleteObject(&s3.DeleteObjectInput{
-				Bucket: aws.String(destFile.bucket),
-				Key:    aws.String(destFile.bucketPrefix),
-			})
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		println("Soft deleting", destFile.String())
-		expiryPeriod := time.Hour * 6
-		if head.CacheControl != nil {
-			for _, d := range strings.Split(*head.CacheControl, ",") {
-				directive := strings.TrimLeft(d, " ")
-				if strings.HasPrefix(directive, "max-age=") {
-					i, err := strconv.Atoi(strings.TrimPrefix(directive, "max-age="))
-					// If there's an error in parsing the int we'll just ignore it and use the default
-					if err == nil {
-						expiryPeriod = time.Duration(i) * time.Second
-					}
-				}
-			}
-
-		}
-		expiresAt := time.Now().UTC().Add(expiryPeriod)
-
-		_, err := m.s3.CopyObject(&s3.CopyObjectInput{
-			Bucket:            aws.String(destFile.bucket),
-			CopySource:        aws.String(fmt.Sprintf("%s/%s", destFile.bucket, destFile.bucketPrefix)),
-			Key:               aws.String(destFile.bucketPrefix),
-			MetadataDirective: aws.String("REPLACE"),
-			Expires:           &expiresAt,
-			Metadata:          head.Metadata,
-		})
-		if err != nil {
-			return err
-		}
-	}
+	err = m.softDeleteHandler(m.s3, head, file, &destFile)
 
 	return err
 }
@@ -621,4 +584,55 @@ func fileInfoChanToMap(files chan *fileInfo) (map[string]*fileInfo, error) {
 		result[file.name] = file
 	}
 	return result, nil
+}
+
+func softDeleteHandler(s3api s3iface.S3API, head *s3.HeadObjectOutput, file *fileInfo, destPath *s3Path) error {
+	if head.Expires != nil {
+		expires, err := time.Parse(time.RFC1123, *head.Expires)
+		if err != nil {
+			return err
+		}
+		if expires.Before(time.Now()) {
+			println("Deleting", destPath.String())
+			_, err := s3api.DeleteObject(&s3.DeleteObjectInput{
+				Bucket: aws.String(destPath.bucket),
+				Key:    aws.String(destPath.bucketPrefix),
+			})
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		println("Soft deleting", destPath.String())
+		expiryPeriod := time.Hour * 6
+		if head.CacheControl != nil {
+			for _, d := range strings.Split(*head.CacheControl, ",") {
+				directive := strings.TrimLeft(d, " ")
+				if strings.HasPrefix(directive, "max-age=") {
+					i, err := strconv.Atoi(strings.TrimPrefix(directive, "max-age="))
+					// If there's an error in parsing the int we'll just ignore it and use the default
+					if err == nil {
+						expiryPeriod = time.Duration(i) * time.Second
+					}
+				}
+			}
+
+		}
+
+		expiresAt := time.Now().UTC().Add(expiryPeriod)
+
+		_, err := s3api.CopyObject(&s3.CopyObjectInput{
+			Bucket:            aws.String(destPath.bucket),
+			CopySource:        aws.String(fmt.Sprintf("%s/%s", destPath.bucket, destPath.bucketPrefix)),
+			Key:               aws.String(destPath.bucketPrefix),
+			MetadataDirective: aws.String("REPLACE"),
+			Expires:           &expiresAt,
+			Metadata:          head.Metadata,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
