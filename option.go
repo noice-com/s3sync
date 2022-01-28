@@ -86,3 +86,17 @@ func WithContentTypeSelector(contentTypeSelector func(string) (string, error)) O
 		m.contentTypeSelector = contentTypeSelector
 	}
 }
+
+// WithSoftDelete removes files with a delay
+func WithSoftDelete() Option {
+	return func(m *Manager) {
+		m.softDelete = true
+	}
+}
+
+// WithCacheControl sets the Cache-Control header for uploaded files as described in https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control
+func WithCacheControl(value string) Option {
+	return func(m *Manager) {
+		m.cacheControl = &value
+	}
+}

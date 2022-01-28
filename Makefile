@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-LOCALSTACK_VERSION = 0.12.18
+LOCALSTACK_VERSION = 0.13.3
 
 .PHONY: test
 test:
@@ -24,11 +24,11 @@ cover:
 
 .PHONY: s3
 s3:
-	docker run -p 4572:4566 -e SERVICES=s3 localstack/localstack:$(LOCALSTACK_VERSION)
+	docker run --name s3 -p 4572:4566 -e SERVICES=s3 localstack/localstack:$(LOCALSTACK_VERSION)
 
 .PHONY: s3-bg
 s3-bg:
-	docker run -d -p 4572:4566 -e SERVICES=s3 localstack/localstack:$(LOCALSTACK_VERSION)
+	docker run -d --name s3 -p 4572:4566 -e SERVICES=s3 localstack/localstack:$(LOCALSTACK_VERSION)
 
 .PHONY: fixture
 fixture:
